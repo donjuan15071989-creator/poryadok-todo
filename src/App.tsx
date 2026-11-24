@@ -2,9 +2,12 @@ import { useTasks } from './hooks/useTasks';
 import { TaskForm } from './components/TaskForm';
 import { TaskFilters } from './components/TaskFilters';
 import { TaskList } from './components/TaskList';
+import { CatWalk } from './components/CatWalk';
 import { pluralizeTasks } from './lib/pluralize';
+import { useRef } from 'react';
 
 function App() {
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const {
     tasks,
     filter,
@@ -38,7 +41,12 @@ function App() {
           <p className="header__subtitle">Меньше хаоса. Больше сделанного.</p>
         </header>
 
-        <section className="card" aria-labelledby="card-heading">
+        <section
+          ref={cardRef}
+          className="card"
+          aria-labelledby="card-heading"
+          style={{ position: 'relative', zIndex: 10 }}
+        >
           <h2 id="card-heading" className="visually-hidden">Список задач</h2>
 
           <TaskForm onAdd={addTask} />
@@ -74,6 +82,8 @@ function App() {
             </div>
           )}
         </section>
+
+        <CatWalk cardRef={cardRef} />
 
         <footer className="footer">
           <p>Задачи хранятся локально в этом браузере. Данные не синхронизируются между устройствами.</p>
