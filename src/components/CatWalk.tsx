@@ -117,6 +117,19 @@ interface CatWalkProps {
 
 type RouteType = 'behind' | 'front';
 
+// User-friendly status messages
+type StatusType = 'walking' | 'done' | 'disabled' | 'reduced-motion' | 'waiting' | 'blocked-input' | 'narrow-screen';
+
+const STATUS_MESSAGES: Record<StatusType, string> = {
+  walking: 'Кот гуляет',
+  done: 'Прогулка завершена',
+  disabled: 'Анимация выключена',
+  'reduced-motion': 'Движение отключено настройками устройства',
+  waiting: 'Ожидание старта...',
+  'blocked-input': 'Ожидание завершения ввода...',
+  'narrow-screen': 'Экран слишком узок для анимации',
+};
+
 export function CatWalk({ cardRef }: CatWalkProps) {
   const [enabled, setEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -127,7 +140,8 @@ export function CatWalk({ cardRef }: CatWalkProps) {
   const [isWalking, setIsWalking] = useState(false);
   const [phase, setPhase] = useState<'idle' | 'starting' | 'paused-near-btn' | 'turning-to-card' | 'walking-to-card' | 'crossing-card' | 'exiting-left' | 'done'>('idle');
   const [route, setRoute] = useState<RouteType | null>(null);
-  const [debugInfo, setDebugInfo] = useState<string>('init');
+  const [status, setStatus] = useState<StatusType | null>(null);
+  const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const catContainerRef = useRef<HTMLDivElement>(null);
   const controlButtonRef = useRef<HTMLButtonElement>(null);
@@ -140,6 +154,34 @@ export function CatWalk({ cardRef }: CatWalkProps) {
   const prefersReducedMotionRef = useRef(false);
   const animationRunningRef = useRef(false);
   const pausedForInputRef = useRef(false);
+
+  const pauseAnimation = useCallback(() => {
+    if (animationRef.current) animationRef.current.pause();
+    setIsWalking(false);
+  }, []);
+
+  const resumeAnimation = useCallback(() => {
+    if (animationRef.current) animationRef.current.play();
+    setIsWalking(true);
+  }, []);
+
+  const stopAnimation = useCallback(() => {
+    if (animationRef.current) {
+      animationRef.current.cancel();
+      animationRef.current = null;
+    }
+    if (phaseTimeoutRef.current) {
+      clearTimeout(phaseTimeoutRef.current);
+      phaseTimeoutRef.current = null;
+    }
+    animationRunningRef.current = false;
+    if (catContainerRef.current) {
+      catContainerRef.current.style.display = 'none';
+      catContainerRef.current.style.opacity = '0';
+    }
+    setIsWalking(false);
+    setPhase('idle');
+  }, []);
 
   // Persist enabled state
   useEffect(() => {
@@ -155,13 +197,13 @@ export function CatWalk({ cardRef }: CatWalkProps) {
       prefersReducedMotionRef.current = e.matches;
       if (e.matches && isWalking) {
         stopAnimation();
-        setDebugInfo('stopped: reduced-motion enabled');
+        setStatus('reduced-motion');
       }
     };
 
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
-  }, [isWalking]);
+  }, [isWalking, stopAnimation]);
 
   // Track user interaction with inputs
   useEffect(() => {
@@ -172,7 +214,7 @@ export function CatWalk({ cardRef }: CatWalkProps) {
         if (isWalking && phase === 'crossing-card' && route === 'front') {
           pausedForInputRef.current = true;
           pauseAnimation();
-          setDebugInfo('paused: user input');
+          setStatus('blocked-input');
         }
       }
     };
@@ -181,7 +223,7 @@ export function CatWalk({ cardRef }: CatWalkProps) {
       if (pausedForInputRef.current && isWalking) {
         pausedForInputRef.current = false;
         resumeAnimation();
-        setDebugInfo('resumed after input');
+        setStatus('walking');
       }
     };
 
@@ -191,7 +233,7 @@ export function CatWalk({ cardRef }: CatWalkProps) {
       document.removeEventListener('focusin', handleFocus);
       document.removeEventListener('focusout', handleBlur);
     };
-  }, [isWalking, phase, route]);
+  }, [isWalking, phase, route, pauseAnimation, resumeAnimation]);
 
   // Track tab visibility
   useEffect(() => {
@@ -204,7 +246,7 @@ export function CatWalk({ cardRef }: CatWalkProps) {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [isWalking, phase]);
+  }, [isWalking, phase, pauseAnimation, resumeAnimation]);
 
   // Get card position
   const updateCardRect = useCallback(() => {
@@ -221,60 +263,35 @@ export function CatWalk({ cardRef }: CatWalkProps) {
     }
   }, [cardRef]);
 
-  // Get control button position
+  // Get control button position (for cat start)
   const updateStartPos = useCallback(() => {
     if (controlButtonRef.current) {
       const rect = controlButtonRef.current.getBoundingClientRect();
       const vw = window.innerWidth;
-      // Position cat above and slightly left of button
       const catWidth = 140;
       const gap = 16;
       startPosRef.current = {
         x: Math.max(catWidth / 2 + 10, rect.left - gap - catWidth / 2),
-        y: rect.top - gap - 90, // cat height ~90px
+        y: rect.top - gap - 90,
       };
-      // Ensure fully in viewport
       if (startPosRef.current.x < catWidth / 2) startPosRef.current.x = catWidth / 2;
       if (startPosRef.current.x > vw - catWidth / 2) startPosRef.current.x = vw - catWidth / 2;
       if (startPosRef.current.y < 10) startPosRef.current.y = 10;
     }
   }, []);
 
-  // Cleanup all animations
-  const cleanup = useCallback(() => {
-    if (animationRef.current) {
-      animationRef.current.cancel();
-      animationRef.current = null;
+  // Show user-friendly status
+  const showStatus = useCallback((newStatus: StatusType, autoHide = false) => {
+    setStatus(newStatus);
+    if (statusTimeoutRef.current) {
+      clearTimeout(statusTimeoutRef.current);
     }
-    if (phaseTimeoutRef.current) {
-      clearTimeout(phaseTimeoutRef.current);
-      phaseTimeoutRef.current = null;
+    if (autoHide && newStatus === 'done') {
+      statusTimeoutRef.current = window.setTimeout(() => setStatus(null), 3000);
     }
-    animationRunningRef.current = false;
   }, []);
 
-  const pauseAnimation = useCallback(() => {
-    if (animationRef.current) animationRef.current.pause();
-    setIsWalking(false);
-  }, []);
-
-  const resumeAnimation = useCallback(() => {
-    if (animationRef.current) animationRef.current.play();
-    setIsWalking(true);
-  }, []);
-
-  const stopAnimation = useCallback(() => {
-    cleanup();
-    if (catContainerRef.current) {
-      catContainerRef.current.style.display = 'none';
-      catContainerRef.current.style.opacity = '0';
-    }
-    setIsWalking(false);
-    setPhase('idle');
-    animationRunningRef.current = false;
-  }, [cleanup]);
-
-  // Animate position using Web Animations API (transform for fixed positioning)
+  // Animate position using Web Animations API
   const animateMove = useCallback((el: HTMLElement, from: Point, to: Point, duration: number): Promise<void> => {
     return new Promise((resolve, reject) => {
       if (!el) return reject(new Error('No element'));
@@ -303,50 +320,34 @@ export function CatWalk({ cardRef }: CatWalkProps) {
 
   // Main walk sequence
   const runWalkSequence = useCallback(async () => {
-    if (!enabled || prefersReducedMotionRef.current) {
-      setDebugInfo('blocked: ' + (!enabled ? 'disabled' : 'reduced-motion'));
+    const prefersReduced = prefersReducedMotionRef.current;
+    if (!enabled || prefersReduced) {
+      showStatus(!enabled ? 'disabled' : 'reduced-motion');
       return;
     }
-    if (animationRunningRef.current) {
-      setDebugInfo('blocked: already running');
-      return;
-    }
-    if (!cardRectRef.current) {
-      setDebugInfo('waiting for card rect...');
-      return;
-    }
-
+    if (animationRunningRef.current) return;
     const card = cardRectRef.current;
+    if (!card) return;
+
     const catEl = catContainerRef.current;
     const walkingEl = catEl?.querySelector('#cat-walking') as HTMLElement;
     const sittingEl = catEl?.querySelector('#cat-sitting') as HTMLElement;
-    if (!catEl || !walkingEl || !sittingEl) {
-      setDebugInfo('blocked: no elements');
-      return;
-    }
+    if (!catEl || !walkingEl || !sittingEl) return;
 
     const vw = window.innerWidth;
-    const vh = window.innerHeight;
 
     // Choose route randomly (50/50)
     const chosenRoute: RouteType = Math.random() < 0.5 ? 'behind' : 'front';
     setRoute(chosenRoute);
 
     // Start position (near button)
+    const vh = window.innerHeight;
     const start = startPosRef.current || { x: vw - 100, y: vh - 120 };
 
     // Intermediate points
-    // Card bottom-right corner (approach target)
     const cardApproachX = card.right - 30;
     const cardApproachY = card.bottom - 40;
-
-    // For route 'behind': go behind card (card bottom edge Y)
-    // For route 'front': go over card (card top + 50 Y)
-    const crossY = chosenRoute === 'behind'
-      ? card.bottom + 20  // Behind: below card bottom
-      : card.top + 60;    // Front: on card surface
-
-    // Exit left at same Y as crossing
+    const crossY = chosenRoute === 'behind' ? card.bottom + 20 : card.top + 60;
     const exitX = -100;
     const exitY = crossY;
 
@@ -361,121 +362,99 @@ export function CatWalk({ cardRef }: CatWalkProps) {
 
     animationRunningRef.current = true;
     setIsWalking(true);
+    showStatus('walking');
 
     try {
       // Phase 1: Appear near button, pause
       setPhase('starting');
-      setDebugInfo('appearing near button');
       await wait(100);
 
       setPhase('paused-near-btn');
-      setDebugInfo('paused near button (0.8s)');
       await wait(800);
 
-      // Phase 2: Turn toward card (visual - just rotate head)
+      // Phase 2: Turn toward card
       setPhase('turning-to-card');
-      setDebugInfo('turning toward card');
       walkingEl.classList.add('cat-head-looking-right');
       await wait(600);
       walkingEl.classList.remove('cat-head-looking-right');
 
       // Phase 3: Walk diagonally to card bottom-right
       setPhase('walking-to-card');
-      setDebugInfo('walking to card');
       await animateMove(catEl, start, { x: cardApproachX, y: cardApproachY }, 3000);
 
       // Phase 4: Cross card (behind or front)
       setPhase('crossing-card');
-      setDebugInfo(`crossing card: ${chosenRoute}`);
 
       if (chosenRoute === 'behind') {
-        // Go behind card: move down behind card bottom, then left
-        // First move down behind card
         await animateMove(catEl, { x: cardApproachX, y: cardApproachY }, { x: cardApproachX, y: crossY }, 800);
-        // Cat is now behind card (z-index 9 < card z-index 10)
-        // Move left behind card
         await animateMove(catEl, { x: cardApproachX, y: crossY }, { x: card.left - 50, y: crossY }, 2500);
-        // Cat emerges from left side of card
-        // Continue to exit
       } else {
-        // Go in front of card: move up onto card surface, then left
         await animateMove(catEl, { x: cardApproachX, y: cardApproachY }, { x: cardApproachX, y: crossY }, 800);
-        // Move left across card front
         await animateMove(catEl, { x: cardApproachX, y: crossY }, { x: card.left - 50, y: crossY }, 2500);
       }
 
       // Phase 5: Exit left
       setPhase('exiting-left');
-      setDebugInfo('exiting left');
       await animateMove(catEl, { x: card.left - 50, y: crossY }, { x: exitX, y: exitY }, 2000);
 
       // Done
       setPhase('done');
-      setDebugInfo('done');
       catEl.style.display = 'none';
       catEl.style.opacity = '0';
       animationRunningRef.current = false;
       setIsWalking(false);
+      showStatus('done', true); // auto-hide after 3s
 
     } catch (e) {
       if (e instanceof Error && e.name !== 'AbortError') {
         console.warn('Cat walk interrupted:', e);
-        setDebugInfo('error: ' + e.message);
       }
       stopAnimation();
     }
-  }, [enabled, animateMove, wait, stopAnimation]);
+  }, [enabled, animateMove, wait, stopAnimation, showStatus]);
 
   // Start sequence (auto after 5s)
   const startSequence = useCallback(() => {
-    if (sessionStartedRef.current || !enabled || prefersReducedMotionRef.current || userInteractingRef.current) {
-      setDebugInfo('not starting: ' + (sessionStartedRef.current ? 'already started' : !enabled ? 'disabled' : prefersReducedMotionRef.current ? 'reduced-motion' : 'user interacting'));
-      return;
-    }
+    if (sessionStartedRef.current || !enabled || prefersReducedMotionRef.current || userInteractingRef.current) return;
 
     sessionStartedRef.current = true;
     updateCardRect();
     updateStartPos();
-    setDebugInfo('waiting 5s...');
+    showStatus('waiting');
 
     phaseTimeoutRef.current = window.setTimeout(() => {
       if (!document.hidden && !userInteractingRef.current && enabled && !prefersReducedMotionRef.current) {
         runWalkSequence();
       } else {
-        setDebugInfo('blocked at timeout: ' + (document.hidden ? 'hidden' : userInteractingRef.current ? 'interacting' : !enabled ? 'disabled' : 'reduced-motion'));
+        showStatus(document.hidden ? 'disabled' : userInteractingRef.current ? 'blocked-input' : !enabled ? 'disabled' : 'reduced-motion');
         sessionStartedRef.current = false;
       }
     }, 5000);
-  }, [enabled, runWalkSequence, updateCardRect, updateStartPos]);
+  }, [enabled, runWalkSequence, updateCardRect, updateStartPos, showStatus]);
 
   // Manual repeat
   const repeatWalk = useCallback(() => {
-    if (!enabled) {
-      setDebugInfo('repeat blocked: disabled - enable first');
-      return;
-    }
-    if (prefersReducedMotionRef.current) {
-      setDebugInfo('repeat blocked: reduced-motion');
-      return;
-    }
+    if (!enabled) { showStatus('disabled'); return; }
+    if (prefersReducedMotionRef.current) { showStatus('reduced-motion'); return; }
     sessionStartedRef.current = false;
     stopAnimation();
     updateCardRect();
     updateStartPos();
-    setDebugInfo('manual repeat');
     runWalkSequence();
-  }, [enabled, runWalkSequence, stopAnimation, updateCardRect, updateStartPos]);
+  }, [enabled, runWalkSequence, stopAnimation, updateCardRect, updateStartPos, showStatus]);
 
-  // Toggle enabled - FIX: call startSequence AFTER state update via effect
+  // Toggle enabled
   const toggleEnabled = useCallback(() => {
     const newEnabled = !enabled;
     setEnabled(newEnabled);
     if (!newEnabled) {
       stopAnimation();
       sessionStartedRef.current = false;
+      showStatus('disabled');
+    } else {
+      showStatus('waiting');
     }
-    // startSequence will be called by effect when enabled changes
-  }, [enabled, stopAnimation]);
+  }, [enabled, stopAnimation, showStatus]);
 
   // Effect to start sequence when enabled becomes true
   useEffect(() => {
@@ -491,10 +470,22 @@ export function CatWalk({ cardRef }: CatWalkProps) {
     updateCardRect();
     updateStartPos();
 
+    // Check screen width - disable on narrow screens
+    const checkScreenWidth = () => {
+      if (window.innerWidth < 400) {
+        if (enabled && !prefersReducedMotionRef.current) {
+          showStatus('narrow-screen');
+        }
+        return false;
+      }
+      return true;
+    };
+
     // Handle resize
     const handleResize = () => {
       updateCardRect();
       updateStartPos();
+      checkScreenWidth();
       if (isWalking) {
         stopAnimation();
         sessionStartedRef.current = false;
@@ -504,42 +495,43 @@ export function CatWalk({ cardRef }: CatWalkProps) {
 
     window.addEventListener('resize', handleResize);
 
-    // Start sequence if enabled
-    if (enabled) {
+    // Start sequence if enabled and screen wide enough
+    if (enabled && checkScreenWidth()) {
       startSequence();
+    } else if (enabled && !checkScreenWidth()) {
+      showStatus('narrow-screen');
     }
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      cleanup();
+      if (animationRef.current) {
+        animationRef.current.cancel();
+        animationRef.current = null;
+      }
+      if (phaseTimeoutRef.current) {
+        clearTimeout(phaseTimeoutRef.current);
+        phaseTimeoutRef.current = null;
+      }
+      animationRunningRef.current = false;
+      if (statusTimeoutRef.current) clearTimeout(statusTimeoutRef.current);
     };
-  }, []); // Run once on mount
+  }, [enabled, updateCardRect, updateStartPos, showStatus, stopAnimation, startSequence, isWalking]); // Run once on mount
 
   // Render
   if (!enabled) {
     return (
-      <div className="cat-walk-control" style={{
-        position: 'fixed', bottom: '20px', right: '20px', zIndex: 100,
-        pointerEvents: 'auto', display: 'flex', flexDirection: 'column',
-        alignItems: 'flex-end', gap: '8px',
-      }}>
+      <div className="cat-walk-control" style={CONTROL_STYLES.container}>
         <button
           ref={controlButtonRef}
           type="button"
           onClick={toggleEnabled}
-          style={{
-            padding: '8px 12px', fontSize: '0.75rem', fontFamily: 'var(--font-serif)',
-            color: '#888', background: '#f0f0f0', border: '2px solid #d8d4ca',
-            borderRadius: 'var(--radius-md)', cursor: 'pointer', transition: 'all var(--transition-fast)',
-          }}
+          style={CONTROL_STYLES.toggleButton(false)}
           aria-label="Включить анимацию кота"
         >
           🐱 Анимация: выкл
         </button>
         {prefersReducedMotionRef.current && (
-          <span style={{ fontSize: '0.65rem', color: '#888', fontFamily: 'var(--font-serif)', whiteSpace: 'nowrap' }}>
-            ⚠ reduced-motion активен
-          </span>
+          <span style={CONTROL_STYLES.warning}>⚠ Движение отключено настройками устройства</span>
         )}
       </div>
     );
@@ -551,18 +543,7 @@ export function CatWalk({ cardRef }: CatWalkProps) {
       <div
         ref={catContainerRef}
         className="cat-walk-container"
-        style={{
-          position: 'fixed',
-          left: '0',
-          top: '0',
-          pointerEvents: 'none',
-          zIndex: 9,
-          display: 'block',
-          opacity: 0,
-          width: '140px',
-          height: '90px',
-          willChange: 'transform, opacity',
-        }}
+        style={CAT_CONTAINER_STYLES}
         aria-hidden="true"
       >
         <div
@@ -571,86 +552,123 @@ export function CatWalk({ cardRef }: CatWalkProps) {
         />
       </div>
 
-      {/* Debug info - TEMPORARY */}
-      <div style={{
-        position: 'fixed', bottom: '60px', right: '20px', zIndex: 101,
-        background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '8px 12px',
-        fontSize: '0.7rem', fontFamily: 'monospace', borderRadius: '4px',
-        pointerEvents: 'none', maxWidth: '250px', whiteSpace: 'pre-wrap',
-      }}>
-        {debugInfo}
-      </div>
+      {/* Control panel - single container with status + buttons */}
+      <div className="cat-walk-control" style={CONTROL_STYLES.container}>
+        {/* Status line - in flow, above buttons */}
+        {status && (
+          <div style={CONTROL_STYLES.status}>
+            {STATUS_MESSAGES[status]}
+          </div>
+        )}
 
-      {/* Control buttons - always visible when enabled */}
-      <div
-        className="cat-walk-control"
-        style={{
-          position: 'fixed',
-          bottom: '20px',
-          right: '20px',
-          zIndex: 100,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-end',
-          gap: '8px',
-          pointerEvents: 'auto',
-        }}
-      >
         <button
           ref={controlButtonRef}
           type="button"
           onClick={toggleEnabled}
-          className="cat-control-toggle"
-          style={{
-            padding: '8px 12px',
-            fontSize: '0.75rem',
-            fontFamily: 'var(--font-serif)',
-            fontWeight: 500,
-            color: enabled ? '#2d3a4f' : '#888',
-            background: enabled ? '#ffe5d6' : '#f0f0f0',
-            border: `2px solid ${enabled ? '#2d3a4f' : '#d8d4ca'}`,
-            borderRadius: 'var(--radius-md)',
-            cursor: 'pointer',
-            transition: 'all var(--transition-fast)',
-            whiteSpace: 'nowrap',
-            boxShadow: 'var(--shadow-sm)',
-          }}
+          style={CONTROL_STYLES.toggleButton(true)}
           aria-label={enabled ? 'Отключить анимацию кота' : 'Включить анимацию кота'}
         >
           {enabled ? '🐱 Анимация: вкл' : '🐱 Анимация: выкл'}
         </button>
 
-        {enabled && (
-          <button
-            type="button"
-            onClick={repeatWalk}
-            disabled={isWalking || prefersReducedMotionRef.current}
-            className="cat-control-repeat"
-            style={{
-              padding: '6px 10px',
-              fontSize: '0.7rem',
-              fontFamily: 'var(--font-serif)',
-              color: (isWalking || prefersReducedMotionRef.current) ? '#888' : '#2d3a4f',
-              background: (isWalking || prefersReducedMotionRef.current) ? '#f0f0f0' : '#ffe5d6',
-              border: `2px solid ${(isWalking || prefersReducedMotionRef.current) ? '#d8d4ca' : '#2d3a4f'}`,
-              borderRadius: 'var(--radius-md)',
-              cursor: (isWalking || prefersReducedMotionRef.current) ? 'not-allowed' : 'pointer',
-              transition: 'all var(--transition-fast)',
-              whiteSpace: 'nowrap',
-              opacity: (isWalking || prefersReducedMotionRef.current) ? 0.6 : 1,
-            }}
-            aria-label={prefersReducedMotionRef.current ? 'Анимация отключена системной настройкой' : isWalking ? 'Подождите завершения' : 'Повторить прогулку кота'}
-          >
-            {prefersReducedMotionRef.current ? '⚠ reduced-motion' : '↻ Повторить'}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={repeatWalk}
+          disabled={isWalking || prefersReducedMotionRef.current}
+          style={CONTROL_STYLES.repeatButton(isWalking || prefersReducedMotionRef.current)}
+          aria-label={prefersReducedMotionRef.current ? 'Анимация отключена системной настройкой' : isWalking ? 'Подождите завершения' : 'Повторить прогулку кота'}
+        >
+          {prefersReducedMotionRef.current ? '⚠ Движение отключено' : '↻ Повторить'}
+        </button>
 
         {prefersReducedMotionRef.current && (
-          <span style={{ fontSize: '0.65rem', color: '#888', fontFamily: 'var(--font-serif)', whiteSpace: 'nowrap', marginTop: '4px' }}>
-            ⚠ reduced-motion активен
-          </span>
+          <span style={CONTROL_STYLES.warning}>⚠ Движение отключено настройками устройства</span>
         )}
       </div>
     </>
   );
 }
+
+// Style constants
+const CAT_CONTAINER_STYLES: React.CSSProperties = {
+  position: 'fixed',
+  left: '0',
+  top: '0',
+  pointerEvents: 'none',
+  zIndex: 9,
+  display: 'block',
+  opacity: 0,
+  width: '140px',
+  height: '90px',
+  willChange: 'transform, opacity',
+};
+
+const CONTROL_STYLES = {
+  container: {
+    position: 'fixed',
+    bottom: '20px',
+    right: '20px',
+    zIndex: 100,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'flex-end' as const,
+    gap: '8px',
+    pointerEvents: 'auto' as const,
+    minWidth: '160px',
+  } as React.CSSProperties,
+
+  status: {
+    fontSize: '0.7rem',
+    fontFamily: 'var(--font-serif)',
+    color: '#4a4a4a',
+    background: 'rgba(255, 255, 255, 0.9)',
+    padding: '4px 10px',
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    textAlign: 'right' as const,
+    maxWidth: '220px',
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    pointerEvents: 'none' as const,
+    boxShadow: 'var(--shadow-sm)',
+  } as React.CSSProperties,
+
+  toggleButton: (enabled: boolean) => ({
+    padding: '8px 12px',
+    fontSize: '0.75rem',
+    fontFamily: 'var(--font-serif)',
+    fontWeight: 500,
+    color: enabled ? '#2d3a4f' : '#888',
+    background: enabled ? '#ffe5d6' : '#f0f0f0',
+    border: `2px solid ${enabled ? '#2d3a4f' : '#d8d4ca'}`,
+    borderRadius: 'var(--radius-md)',
+    cursor: 'pointer',
+    transition: 'all var(--transition-fast)',
+    whiteSpace: 'nowrap' as const,
+    boxShadow: 'var(--shadow-sm)',
+  }) as React.CSSProperties,
+
+  repeatButton: (disabled: boolean) => ({
+    padding: '6px 10px',
+    fontSize: '0.7rem',
+    fontFamily: 'var(--font-serif)',
+    color: disabled ? '#888' : '#2d3a4f',
+    background: disabled ? '#f0f0f0' : '#ffe5d6',
+    border: `2px solid ${disabled ? '#d8d4ca' : '#2d3a4f'}`,
+    borderRadius: 'var(--radius-md)',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    transition: 'all var(--transition-fast)',
+    whiteSpace: 'nowrap' as const,
+    opacity: disabled ? 0.6 : 1,
+  }) as React.CSSProperties,
+
+  warning: {
+    fontSize: '0.65rem',
+    color: '#888',
+    fontFamily: 'var(--font-serif)',
+    whiteSpace: 'nowrap' as const,
+    marginTop: '4px',
+    textAlign: 'right' as const,
+  } as React.CSSProperties,
+};
